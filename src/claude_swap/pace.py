@@ -20,7 +20,7 @@ evaluated against the clock it was actually measured at.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, time, timedelta
 
 # Weekly windows reset on a fixed 7-day cadence (matches menubar._WEEKLY_PERIOD_S).
 WEEKLY_PERIOD_S = 7 * 86400.0
@@ -159,3 +159,30 @@ def will_last_to_reset(pace: PaceResult) -> bool | None:
         return None
     projected_total_pct = pace.actual_pct + rate_pct_per_s * (pace.period_s - pace.elapsed_s)
     return projected_total_pct <= 100.0
+
+
+def expected_pct(resets_at: float, now: float, *, work_days: int = 7) -> float:
+    start = resets_at - WEEKLY_PERIOD_S
+    if work_days >= 7:
+        return min(100.0, max(0.0, (now - start) / WEEKLY_PERIOD_S * 100.0))
+    total = elapsed = 0.0
+    cursor = start
+    while cursor < resets_at:
+        day = datetime.fromtimestamp(cursor)
+        midnight = datetime.combine(day.date() + timedelta(days=1), time()).timestamp()
+        end = min(midnight, resets_at)
+        if day.isoweekday() <= work_days:
+            total += end - cursor
+            elapsed += max(0.0, min(now, end) - cursor)
+        cursor = end
+    return elapsed / total * 100.0 if total else 0.0
+
+
+def weekly_deficit(usage: dict | str | None, now: float, *, work_days: int = 7) -> float | None:
+    window = usage.get("seven_day") if isinstance(usage, dict) else None
+    if not isinstance(window, dict) or not isinstance(window.get("pct"), (int, float)):
+        return None
+    resets_at = _resets_at_ts(window.get("resets_at"))
+    if resets_at is None or not now < resets_at <= now + WEEKLY_PERIOD_S:
+        return None
+    return float(window["pct"]) - expected_pct(resets_at, now, work_days=work_days)
