@@ -1483,7 +1483,11 @@ class AutoSwitchEngine:
         left, or only a different active?
         """
         came_from = state.get("lastSwitchFrom")
-        if trigger not in ("proactive", "consume-first") or came_from is None:
+        if (
+            trigger not in ("proactive", "consume-first")
+            or came_from is None
+            or state.get("leftTrigger") == "pace"
+        ):
             return None
         # Only while we are still standing where that switch put us. A manual
         # switch away already undid the move, so there is nothing left to
