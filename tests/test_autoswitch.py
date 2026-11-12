@@ -921,6 +921,27 @@ class TestAdaptiveScheduler:
         self._tick(h, counts, usage)
         assert counts["1"] == 3  # half the time to the line
 
+    def test_failed_fetches_switch_on_the_estimated_burn(
+        self, temp_home, monkeypatch
+    ):
+        h = self._harness(temp_home, monkeypatch, accounts=2)
+        usage = {"1": _usage(70), "2": _usage(10)}
+        counts: dict[str, int] = {}
+        self._tick(h, counts, usage)
+        usage["1"] = _usage(80)
+        h.clock.advance(180)
+        self._tick(h, counts, usage)
+        rate_limited = {"1": "http-429"}
+        h.clock.advance(90)  # estimate 85%: under the line
+        assert self._tick(h, counts, usage, rate_limited) is TickOutcome.NO_ACTION
+        poll = [e for e in h.events if isinstance(e, PollEvent)][-1]
+        assert poll.windows["1"]["5h"] == pytest.approx(85.0)
+        assert poll.estimated == ["1"]
+        assert "5h 85% used (estimated)" in poll.human()
+        h.clock.advance(120)  # estimate ~92%: over the 90% line
+        assert self._tick(h, counts, usage, rate_limited) is TickOutcome.SWITCHED
+        assert h.active_number() == 2
+
     def test_in_band_without_movement_keeps_the_floor(self, temp_home, monkeypatch):
         # In the escalation band but not burning: no urgency — the normal
         # 180s floor applies (escalation keeps candidates fresh; it must not

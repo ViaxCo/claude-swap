@@ -1742,6 +1742,16 @@ class TestAdopt:
         assert store.adopt({"1": (USAGE, 30.0)}, IDENT) == set()
         assert store.entries(IDENT)["1"].last_good == local
 
+    def test_adopted_reading_keeps_the_one_before_for_the_climb(self, store, clock):
+        store.record({"1": FetchRecord(usage=USAGE)}, IDENT)
+        before = clock.now
+        clock.advance(180)
+        later = {"five_hour": {"pct": 30.0}}
+        store.adopt({"1": (later, 0.0)}, IDENT)
+        entry = store.entries(IDENT)["1"]
+        assert (entry.prev_good, entry.prev_fetched_at) == (USAGE, before)
+        assert (entry.last_good, entry.fetched_at) == (later, clock.now)
+
     def test_fetch_state_is_left_alone(self, store, clock):
         # Failures, backoff and the 429 marker describe this machine's own
         # requests; a reading from elsewhere is no evidence about them.

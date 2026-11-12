@@ -303,6 +303,7 @@ class PollEvent(AutoSwitchEvent):
     # only when set. Every pct above stays RAW: the lines are applied where
     # the engine compares, never to the numbers it logs.
     weekly_threshold: float | None = None
+    estimated: list[str] = field(default_factory=list)
 
     def _fields(self) -> dict:
         fields = {
@@ -316,6 +317,8 @@ class PollEvent(AutoSwitchEvent):
             fields["windowsPct"] = self.windows
         if self.weekly_threshold is not None:
             fields["weeklyThreshold"] = self.weekly_threshold
+        if self.estimated:
+            fields["estimated"] = self.estimated
         return fields
 
     def _describe(self, num: str) -> str:
@@ -346,6 +349,8 @@ class PollEvent(AutoSwitchEvent):
                 self.weekly_threshold,
             )
             used = f"{binding.label} {binding.pct:.0f}% used"
+            if str(num) in self.estimated:
+                used += " (estimated)"
             line = binding.line
         elif h is not None:
             used = f"{100 - h:.0f}% used"
@@ -1201,6 +1206,11 @@ class AutoSwitchEngine:
                         value if isinstance(value, dict) else None, self._models
                     ))
                 },
+                estimated=[
+                    num
+                    for num, value in usage.items()
+                    if isinstance(value, dict) and value.get("estimated")
+                ],
             )
         )
 
@@ -1479,7 +1489,7 @@ class AutoSwitchEngine:
             entries = self.switcher.usage_entries_by_account(
                 fetch={current, *candidates}
             )
-            usage = {num: entry.decision_value() for num, entry in entries.items()}
+            usage = self._decision_usage(entries, current)
             headroom = _headroom_by_account(usage, self._models)
             active_headroom = headroom.get(current)
             decided_now = self.clock()
@@ -2541,7 +2551,7 @@ class AutoSwitchEngine:
             # nomination preserves a valid future plan under the store lock.
             scheduled=not stale_candidate_plan,
         )
-        usage = {num: entry.decision_value() for num, entry in entries.items()}
+        usage = self._decision_usage(entries, current)
 
         active_value = usage.get(current)
         active_headroom = oauth.account_headroom(
@@ -2593,10 +2603,33 @@ class AutoSwitchEngine:
             entries = self.switcher.usage_entries_by_account(
                 fetch=escalation_fetch
             )
-            usage = {num: entry.decision_value() for num, entry in entries.items()}
+            usage = self._decision_usage(entries, current)
 
         headroom = _headroom_by_account(usage, self._models)
         return entries, usage, headroom
+
+    def _decision_usage(
+        self, entries: dict, current: str
+    ) -> dict[str, dict | str | None]:
+        usage = {num: entry.decision_value() for num, entry in entries.items()}
+        entry = entries.get(current)
+        value = usage.get(current)
+        if entry is None or entry.last_error is None or not isinstance(value, dict):
+            return usage
+        rates = poll_policy.rise_rates(
+            entry.prev_good,
+            entry.prev_fetched_at,
+            entry.last_good,
+            entry.fetched_at,
+            self._models,
+        )
+        if rates:
+            now = self.clock()
+            estimate = poll_policy.estimate_usage(
+                value, rates, now - entry.fetched_at, now
+            )
+            usage[current] = {**estimate, "estimated": True}
+        return usage
 
     def _perform(
         self,

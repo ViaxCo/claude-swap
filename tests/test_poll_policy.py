@@ -153,6 +153,31 @@ class TestUrgentPacing:
         assert poll_policy.rise_rates(prev, None, new, NOW) == {}
 
 
+class TestEstimate:
+    def test_estimate_carries_rising_windows_forward(self):
+        reading = _usage7(76, 50)
+        estimate = poll_policy.estimate_usage(reading, {"5h": 0.1}, 120.0, NOW)
+        assert estimate["five_hour"]["pct"] == pytest.approx(88.0)
+        assert estimate["seven_day"]["pct"] == 50
+        assert reading["five_hour"]["pct"] == 76
+        capped = poll_policy.estimate_usage(reading, {"5h": 0.1}, 3600.0, NOW)
+        assert capped["five_hour"]["pct"] == 100.0
+
+    def test_estimate_skips_a_window_past_its_reset(self):
+        past = datetime.fromtimestamp(NOW - 1, tz=timezone.utc).isoformat()
+        future = datetime.fromtimestamp(NOW + 600, tz=timezone.utc).isoformat()
+        rolled = poll_policy.estimate_usage(_usage(76, past), {"5h": 0.1}, 120.0, NOW)
+        live = poll_policy.estimate_usage(_usage(76, future), {"5h": 0.1}, 120.0, NOW)
+        assert rolled["five_hour"]["pct"] == 76
+        assert live["five_hour"]["pct"] == pytest.approx(88.0)
+
+    def test_estimate_follows_scoped_windows_by_name(self):
+        reading = {"five_hour": {"pct": 10.0}, "scoped": [{"name": "Fable", "pct": 90.0}]}
+        estimate = poll_policy.estimate_usage(reading, {"Fable": 0.01}, 100.0, NOW)
+        assert estimate["scoped"][0]["pct"] == pytest.approx(91.0)
+        assert estimate["five_hour"]["pct"] == 10.0
+
+
 class TestPost429Floor:
     def test_recent_429_floors_the_cadence(self):
         _, interval = _plan(recent_429=True, prev_usage=_usage(10))

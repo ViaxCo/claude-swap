@@ -314,6 +314,8 @@ class UsageEntry:
     # import-usage``) keeps every collector off this slot. Appended for the
     # same positional compatibility as ``claim_until``.
     held_until: float | None = None
+    prev_good: dict | None = None
+    prev_fetched_at: float | None = None
 
     def fresh(self, now: float, ttl: float = SERVE_TTL_S) -> bool:
         return self.fetched_at is not None and (now - self.fetched_at) <= ttl
@@ -561,6 +563,13 @@ def _rejection_backoff_until(usage: dict | None, now: float) -> float | None:
     if not isinstance(retry_after, (int, float)) or not retry_after > 0:
         return None
     return now + min(float(retry_after), RETRY_AFTER_FLOOR_CAP_S)
+
+
+def _store_good(row: dict, usage: dict | None, fetched_at: float) -> None:
+    row["prevGood"] = row.get("lastGood")
+    row["prevFetchedAt"] = row.get("fetchedAt")
+    row["lastGood"] = usage
+    row["fetchedAt"] = fetched_at
 
 
 def _rejection_deadline(usage: dict | None, now: float) -> float | None:
@@ -953,6 +962,7 @@ class UsageStore:
             if not isinstance(fetched_at, (int, float)):
                 fetched_at = None
             last_good = row.get("lastGood")
+            prev_good = row.get("prevGood")
             age_s = (now - fetched_at) if fetched_at is not None else None
             consecutive_failures = int(row.get("consecutiveFailures") or 0)
             next_poll_at = _num_or_none(row.get("nextPollAt"))
@@ -1011,6 +1021,8 @@ class UsageStore:
                 trust_extended=trust_extended,
                 claim_until=claim_until,
                 held_until=held_until,
+                prev_good=prev_good if isinstance(prev_good, dict) else None,
+                prev_fetched_at=_num_or_none(row.get("prevFetchedAt")),
             )
         return out
 
@@ -1146,8 +1158,7 @@ class UsageStore:
                 return
             row["lastAttemptAt"] = now
             if rec.error is None:
-                row["lastGood"] = rec.usage
-                row["fetchedAt"] = now
+                _store_good(row, rec.usage, now)
                 # Replace the old, possibly due plan in the outcome transaction
                 # so no collector can slip into a record→replan gap.
                 plan = plans.get(num) if plans is not None else None
@@ -1260,8 +1271,7 @@ class UsageStore:
             fetched_at = now - max(0.0, age_s)
             stored = _num_or_none(row.get("fetchedAt"))
             if stored is None or fetched_at > stored:
-                row["lastGood"] = usage
-                row["fetchedAt"] = fetched_at
+                _store_good(row, usage, fetched_at)
                 stored = fetched_at
                 adopted.add(num)
                 deadline = _rejection_deadline(usage, now)

@@ -63,6 +63,7 @@ module only.
 
 from __future__ import annotations
 
+import copy
 import random
 from collections.abc import Callable
 from datetime import datetime
@@ -214,6 +215,25 @@ def rise_rates(
         for label, pct, _ in oauth.relevant_windows(new_usage, models)
         if label in prev and pct > prev[label]
     }
+
+
+def estimate_usage(
+    usage: dict, rates: dict[str, float], elapsed_s: float, now: float
+) -> dict:
+    estimate = copy.deepcopy(usage)
+    windows = [
+        (oauth.FIVE_HOUR_LABEL, estimate.get("five_hour")),
+        ("7d", estimate.get("seven_day")),
+        *((s.get("name"), s) for s in estimate.get("scoped") or [] if isinstance(s, dict)),
+    ]
+    for label, window in windows:
+        rate = rates.get(label)
+        if rate is None or not isinstance(window, dict):
+            continue
+        reset_ts = parse_reset_ts(window.get("resets_at"))
+        if reset_ts is None or reset_ts > now:
+            window["pct"] = min(100.0, window["pct"] + rate * elapsed_s)
+    return estimate
 
 
 def plan_after_fetch(
