@@ -125,6 +125,34 @@ class TestUrgentMode:
         assert interval == poll_policy.MIN_INTERVAL_S
 
 
+class TestUrgentPacing:
+    def _interval(self, prev_pct, new_pct, elapsed_s=180.0):
+        return _plan(
+            prev_interval_s=poll_policy.MIN_INTERVAL_S,
+            prev_usage=_usage(prev_pct),
+            prev_fetched_at=NOW - elapsed_s,
+            new_usage=_usage(new_pct),
+            is_active=True,
+        )[1]
+
+    def test_slow_burn_keeps_the_floor(self):
+        assert self._interval(78, 82) == poll_policy.MIN_INTERVAL_S
+
+    def test_polls_at_half_the_time_to_the_line(self):
+        assert self._interval(76, 82) == 120.0
+
+    def test_imminent_crossing_polls_at_the_urgent_floor(self):
+        assert self._interval(70, 82) == poll_policy.URGENT_INTERVAL_S
+        assert self._interval(80, 92) == poll_policy.URGENT_INTERVAL_S
+
+    def test_rise_rates_per_rising_window(self):
+        prev = _usage7(70, 50)
+        new = _usage7(76, 50)
+        assert poll_policy.rise_rates(prev, NOW - 60, new, NOW) == {"5h": 0.1}
+        assert poll_policy.rise_rates(prev, NOW, new, NOW) == {}
+        assert poll_policy.rise_rates(prev, None, new, NOW) == {}
+
+
 class TestPost429Floor:
     def test_recent_429_floors_the_cadence(self):
         _, interval = _plan(recent_429=True, prev_usage=_usage(10))

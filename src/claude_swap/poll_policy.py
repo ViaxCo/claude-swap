@@ -84,11 +84,12 @@ MIN_INTERVAL_S = 180.0
 # toward a limit — a window dropping into the band just gained room). Judged
 # per window rather than on the binding max: a 5h window closing on its line
 # under a flat, higher weekly window is exactly the burn a max-only rule is
-# blind to. Bounded by construction: either the line is crossed (the engine
-# switches away) or the rise stops (the next poll decays back to
-# MIN_INTERVAL_S) — worst case margin/movement-delta ≈ 15 polls per episode,
-# inside the measured ~28-30 request rolling-hour window; overshoot on top of
-# steady traffic is absorbed by the post-429 floor below.
+# blind to. The interval is half the predicted time to the line at the
+# measured rate of rise, floored here, so a slow climb through the band keeps
+# the normal cadence and only the last minutes before a crossing poll fast.
+# A whole band of 60s polls (margin/movement-delta ≈ 15) on top of steady
+# traffic is what spent the ~28-30 request rolling-hour window and blinded
+# the engine right before a switch.
 URGENT_INTERVAL_S = 60.0
 
 # Decay ceilings for an account whose usage is not moving: the active account
@@ -198,10 +199,28 @@ def parse_reset_ts(resets_at: str | None) -> float | None:
         return None
 
 
+def rise_rates(
+    prev_usage: dict | None,
+    prev_at: float | None,
+    new_usage: dict | None,
+    new_at: float | None,
+    models: tuple[str, ...] = (),
+) -> dict[str, float]:
+    if prev_at is None or new_at is None or new_at <= prev_at:
+        return {}
+    prev = {label: pct for label, pct, _ in oauth.relevant_windows(prev_usage, models)}
+    return {
+        label: (pct - prev[label]) / (new_at - prev_at)
+        for label, pct, _ in oauth.relevant_windows(new_usage, models)
+        if label in prev and pct > prev[label]
+    }
+
+
 def plan_after_fetch(
     *,
     prev_interval_s: float | None,
     prev_usage: dict | None,
+    prev_fetched_at: float | None = None,
     new_usage: dict | None,
     is_active: bool,
     threshold: float,
@@ -217,7 +236,9 @@ def plan_after_fetch(
     poll) halves the interval, floored at ``MIN_INTERVAL_S`` — or drops to
     ``URGENT_INTERVAL_S`` when one of the active account's windows rose by
     that much into the escalation band under its own line (``threshold`` for
-    the 5h window, ``weekly_threshold`` when set for the weekly ones). No
+    the 5h window, ``weekly_threshold`` when set for the weekly ones), paced
+    at half the time to that line at the rate measured since
+    ``prev_fetched_at``. No
     movement backs off ×1.5 toward the account's ceiling;
     unknown utilization uses the default. A recent 429 on this token floors
     the cadence at ``POST_429_MIN_INTERVAL_S`` (and suppresses urgent mode)
@@ -257,7 +278,16 @@ def plan_after_fetch(
         for label, pct, _ in oauth.relevant_windows(new_usage, models)
     )
     if is_active and rising_in_band and not recent_429:
-        interval = URGENT_INTERVAL_S
+        rates = rise_rates(prev_usage, prev_fetched_at, new_usage, now, models)
+        eta = min(
+            (
+                (window_line(label, threshold, weekly_threshold) - pct) / rates[label]
+                for label, pct, _ in oauth.relevant_windows(new_usage, models)
+                if label in rates
+            ),
+            default=0.0,
+        )
+        interval = min(interval, max(URGENT_INTERVAL_S, eta / 2))
     if recent_429:
         # AIMD additive-increase: grow the interval multiplicatively from the
         # last one toward the wider 429 ceiling, so machines sharing a

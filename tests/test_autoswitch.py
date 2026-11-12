@@ -888,20 +888,38 @@ class TestAdaptiveScheduler:
         assert counts["1"] == 3
 
     def test_urgent_cadence_when_burning_near_the_band(self, temp_home, monkeypatch):
-        # Active moving inside the escalation band → 60s urgent cadence, so
-        # a threshold crossing is seen within a minute of the previous poll.
+        # Active burning inside the escalation band with its line under two
+        # minutes away → 60s urgent cadence, so the crossing is seen within a
+        # minute of the previous poll.
         h = self._harness(temp_home, monkeypatch, accounts=2)
         usage = {"1": _usage(70), "2": _usage(10)}
         counts: dict[str, int] = {}
         self._tick(h, counts, usage)
-        usage["1"] = _usage(80)  # burning: +10 pts, now inside the band
+        usage["1"] = _usage(86)  # +16 pts in 180s: the 90% line is 45s away
         h.clock.advance(180)
         self._tick(h, counts, usage)  # movement + in band → urgent plan
         assert counts["1"] == 2
-        usage["1"] = _usage(84)
+        usage["1"] = _usage(89)
         h.clock.advance(60)
         self._tick(h, counts, usage)  # urgent plan due after only 60s
         assert counts["1"] == 3
+
+    def test_slow_burn_in_band_paces_by_time_to_the_line(
+        self, temp_home, monkeypatch
+    ):
+        h = self._harness(temp_home, monkeypatch, accounts=2)
+        usage = {"1": _usage(70), "2": _usage(10)}
+        counts: dict[str, int] = {}
+        self._tick(h, counts, usage)
+        usage["1"] = _usage(80)  # +10 pts in 180s: the 90% line is 180s away
+        h.clock.advance(180)
+        self._tick(h, counts, usage)
+        h.clock.advance(60)
+        self._tick(h, counts, usage)
+        assert counts["1"] == 2  # not 60s urgent polls
+        h.clock.advance(30)
+        self._tick(h, counts, usage)
+        assert counts["1"] == 3  # half the time to the line
 
     def test_in_band_without_movement_keeps_the_floor(self, temp_home, monkeypatch):
         # In the escalation band but not burning: no urgency — the normal
@@ -927,11 +945,11 @@ class TestAdaptiveScheduler:
         usage = {"1": _usage(30), "2": _usage(10)}
         counts: dict[str, int] = {}
         self._tick(h, counts, usage)
-        usage["1"] = _usage(40)
+        usage["1"] = _usage(46)
         h.clock.advance(180)
-        self._tick(h, counts, usage)  # movement inside the 35..50 band
+        self._tick(h, counts, usage)  # burning inside the 35..50 band
         assert counts["1"] == 2
-        usage["1"] = _usage(44)
+        usage["1"] = _usage(49)
         h.clock.advance(60)
         self._tick(h, counts, usage)  # urgent plan due after only 60s
         assert counts["1"] == 3

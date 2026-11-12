@@ -5771,6 +5771,7 @@ class ClaudeAccountSwitcher:
             plans[num] = poll_policy.plan_after_fetch(
                 prev_interval_s=before.poll_interval_s if before else None,
                 prev_usage=before.last_good if before else None,
+                prev_fetched_at=before.fetched_at if before else None,
                 new_usage=rec.usage,
                 is_active=bool(info_by_num[num][4]),
                 threshold=threshold,
